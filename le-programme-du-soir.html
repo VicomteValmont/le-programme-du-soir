@@ -2348,11 +2348,15 @@ function calculer_statistiques(profil, catalogue){
   const formats = {film:0, serie:0, doc:0};
   const decennies = {};
   const auteurs = {};
-  let notes = 0, somme = 0;
+  let notes = 0, somme = 0, total = 0;
 
   for(const entree of vus){
     const oeuvre = index.get(entree.cle);
+    // Une entrée dont l'œuvre a disparu du catalogue (titre ajouté à la main puis
+    // supprimé) n'est comptée nulle part : sinon le total dépasserait la somme des
+    // formats et les barres de répartition seraient calculées sur un tout faussé.
     if(!oeuvre) continue;
+    total++;
     formats[oeuvre.f] = (formats[oeuvre.f] || 0) + 1;
     const decennie = Math.floor(oeuvre.a / 10) * 10;
     decennies[decennie] = (decennies[decennie] || 0) + 1;
@@ -2361,7 +2365,7 @@ function calculer_statistiques(profil, catalogue){
   }
   const classer = objet => Object.entries(objet).sort((a,b) => b[1] - a[1]);
   return {
-    total: vus.length,
+    total,
     formats,
     decennies: Object.entries(decennies).sort((a,b) => a[0] - b[0]),
     auteurs: classer(auteurs).slice(0, 5),
@@ -3571,12 +3575,22 @@ function tenir_dans(catalogue, minutes, options = {}){
 }
 
 /**
+ * Minutes de battement entre deux titres d'une même soirée.
+ * Valeur unique partagée par la composition de la soirée et l'affichage des horaires :
+ * les deux doivent réserver exactement le même temps, sans quoi la grille horaire
+ * déborde du créneau que l'on vient d'annoncer comme tenable.
+ */
+const ENTRACTE_MINUTES = 15;
+
+/**
  * Construit une soirée de plusieurs titres qui remplit le temps disponible.
  * Algorithme glouton : on prend le plus long qui rentre encore, puis on recommence.
+ * Le temps réservé inclut les entractes, si bien que `total + entractes` ne dépasse
+ * jamais le créneau demandé et que `reste` est le battement réellement disponible.
  * @param {object[]} catalogue
  * @param {number} minutes
  * @param {number} [graine=1] - graine du tirage, pour la reproductibilité
- * @returns {{titres: object[], total: number, reste: number}}
+ * @returns {{titres: object[], total: number, entractes: number, reste: number}}
  */
 function remplir_soiree(catalogue, minutes, graine = 1){
   if(!Number.isFinite(minutes) || minutes <= 0){
@@ -3594,10 +3608,13 @@ function remplir_soiree(catalogue, minutes, graine = 1){
   for(const oeuvre of disponibles){
     if(titres.length >= 4) break;
     const duree = duree_minutes(oeuvre.d);
-    if(duree <= reste - 5){ titres.push(oeuvre); reste -= duree + 5; }
+    // À partir du deuxième titre, l'entracte qui le précède fait partie de son coût.
+    const cout = duree + (titres.length > 0 ? ENTRACTE_MINUTES : 0);
+    if(cout <= reste){ titres.push(oeuvre); reste -= cout; }
   }
   const total = titres.reduce((somme, oeuvre) => somme + duree_minutes(oeuvre.d), 0);
-  return {titres, total, reste: minutes - total};
+  const entractes = Math.max(0, titres.length - 1) * ENTRACTE_MINUTES;
+  return {titres, total, entractes, reste: minutes - total - entractes};
 }
 
 /* ── F2. Les fils rouges ──────────────────────────────────────── */
@@ -4095,11 +4112,11 @@ function seances_de(seances, cle){
  * Calcule les horaires d'une soirée à plusieurs titres, entractes compris.
  * @param {object[]} oeuvres
  * @param {string} depart - heure de début au format "20:30"
- * @param {number} [entracte=15] - minutes entre deux titres
+ * @param {number} [entracte=ENTRACTE_MINUTES] - minutes entre deux titres
  * @returns {Array<{oeuvre: object, debut: string, fin: string}>}
  * @throws {Error} si l'heure de départ est mal formée
  */
-function horaires_soiree(oeuvres, depart, entracte = 15){
+function horaires_soiree(oeuvres, depart, entracte = ENTRACTE_MINUTES){
   if(!Array.isArray(oeuvres)) throw new Error("Liste d'œuvres attendue, reçu : " + typeof oeuvres);
   const decoupe = /^(\d{1,2}):(\d{2})$/.exec(String(depart || "").trim());
   if(!decoupe) throw new Error('Heure attendue au format "20:30", reçu : ' + depart);
