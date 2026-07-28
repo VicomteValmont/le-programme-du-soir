@@ -1,0 +1,16 @@
+# Configuration locale Claude Code (chemins et permissions propres à la machine)
+.claude/
+
+# Windows / OneDrive
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+*~
