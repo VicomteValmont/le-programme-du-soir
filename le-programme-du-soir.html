@@ -2465,6 +2465,166 @@ function valider_oeuvre(oeuvre){
   return problemes;
 }
 
+/* ── Audit du catalogue ───────────────────────────────────────────
+   Les contrôles ci-dessous existent parce que chacun d'eux a déjà
+   attrapé un défaut réel : 754 voisins pointant sur l'œuvre elle-même,
+   et 101 entrées qui étaient le même titre saisi deux fois.
+   ─────────────────────────────────────────────────────────────── */
+
+/** Seuil en deçà duquel un fil rouge n'est plus proposé. */
+const SEUIL_FIL_ROUGE = 6;
+
+/**
+ * Vrai si deux étiquettes ne diffèrent que d'un caractère.
+ * Sert à repérer les synonymes involontaires du vocabulaire.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function etiquettes_voisines(a, b){
+  if(Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, ecarts = 0;
+  while(i < a.length && j < b.length){
+    if(a[i] === b[j]){ i++; j++; continue; }
+    if(++ecarts > 1) return false;
+    if(a.length > b.length) i++;
+    else if(b.length > a.length) j++;
+    else { i++; j++; }
+  }
+  return ecarts + (a.length - i) + (b.length - j) <= 1;
+}
+
+/**
+ * Passe un catalogue au crible et retourne ses anomalies.
+ * Fonction pure : ne lit ni l'horloge ni le stockage, et ne modifie rien.
+ * Les gravités : « bloquant » casse une fonctionnalité, « sérieux » produit
+ * un affichage faux, « signal » mérite un coup d'œil sans être une erreur.
+ * @param {object[]} catalogue
+ * @returns {{anomalies: Array<{nature: string, gravite: string, sujet: string, detail: string}>, resume: object}}
+ */
+function auditer_catalogue(catalogue){
+  if(!Array.isArray(catalogue)) throw new Error("Catalogue attendu, reçu : " + typeof catalogue);
+  const anomalies = [];
+  const noter = (nature, gravite, sujet, detail) => anomalies.push({nature, gravite, sujet, detail});
+
+  const titres = new Set(catalogue.map(oeuvre => normaliser(oeuvre.t)));
+  const clesVues = new Map();
+  const parTitre = new Map();
+  const parAuteurAnnee = new Map();
+  const frequenceTags = new Map();
+
+  for(const oeuvre of catalogue){
+    const sujet = oeuvre.t || "(sans titre)";
+
+    for(const probleme of valider_oeuvre(oeuvre)){
+      noter("Champ invalide", "bloquant", sujet, probleme);
+    }
+
+    const cle = cle_oeuvre(oeuvre);
+    if(clesVues.has(cle)) noter("Clé en double", "bloquant", sujet, "déjà utilisée par « " + clesVues.get(cle) + " »");
+    else clesVues.set(cle, sujet);
+
+    const titreNormalise = normaliser(oeuvre.t);
+    if(parTitre.has(titreNormalise)) parTitre.get(titreNormalise).push(oeuvre);
+    else parTitre.set(titreNormalise, [oeuvre]);
+
+    const cleAuteur = oeuvre.a + "|" + oeuvre.r;
+    if(parAuteurAnnee.has(cleAuteur)) parAuteurAnnee.get(cleAuteur).push(oeuvre);
+    else parAuteurAnnee.set(cleAuteur, [oeuvre]);
+
+    for(const etiquette of oeuvre.tg || []){
+      frequenceTags.set(etiquette, (frequenceTags.get(etiquette) || 0) + 1);
+    }
+
+    const voisinsVus = new Set();
+    for(const voisin of oeuvre.v || []){
+      const voisinNormalise = normaliser(voisin);
+      if(voisinNormalise === titreNormalise) noter("Voisin : l'œuvre elle-même", "sérieux", sujet, "« " + voisin + " »");
+      else if(!titres.has(voisinNormalise)) noter("Voisin absent du catalogue", "sérieux", sujet, "« " + voisin + " »");
+      if(voisinsVus.has(voisinNormalise)) noter("Voisin répété", "signal", sujet, "« " + voisin + " »");
+      voisinsVus.add(voisinNormalise);
+    }
+
+    if(/\(reprise\)/i.test(oeuvre.t)) noter("Titre suffixé « (reprise) »", "signal", sujet, "suffixe à retirer ou doublon à supprimer");
+    if(oeuvre.f === "film" && duree_minutes(oeuvre.d) === null){
+      noter("Durée illisible", "signal", sujet, "« " + oeuvre.d + " » : le sablier ignorera ce titre");
+    }
+  }
+
+  for(const [, groupe] of parTitre){
+    if(groupe.length > 1){
+      noter("Titre identique", "signal", groupe[0].t,
+        groupe.map(o => o.a + " · " + o.f).join(" et ") + " — deux œuvres distinctes ou un doublon ?");
+    }
+  }
+
+  for(const [, groupe] of parAuteurAnnee){
+    if(groupe.length < 2) continue;
+    for(let i = 0; i < groupe.length; i++){
+      for(let j = i + 1; j < groupe.length; j++){
+        const a = groupe[i], b = groupe[j];
+        const na = normaliser(a.t), nb = normaliser(b.t);
+        const indices = [];
+        if(na !== nb && (na.includes(nb) || nb.includes(na))) indices.push("un titre contient l'autre");
+        if(a.p === b.p) indices.push("pitch identique");
+        if(a.d === b.d && a.f === b.f) indices.push("durée et format identiques");
+        if(indices.length > 0){
+          noter("Doublon probable", "sérieux", a.t + " / " + b.t,
+            a.a + ", " + a.r + " — " + indices.join(", "));
+        }
+      }
+    }
+  }
+
+  const etiquettes = [...frequenceTags.keys()].sort();
+  for(const [etiquette, compte] of frequenceTags){
+    if(compte === 1) noter("Étiquette unique", "signal", etiquette, "n'apparaît que sur un titre : faute de frappe ?");
+  }
+  // Deux étiquettes proches ne sont un problème que si l'une est presque
+  // inemployée : c'est la signature d'une faute de frappe. Deux étiquettes
+  // bien installées qui se ressemblent — « coree » et « corse », « irlande »
+  // et « islande » — sont distinctes à dessein. Les décennies, toutes de la
+  // forme « annees12 », se ressemblent par construction : on les ignore.
+  const decennie = /^annees\d+$/;
+  for(let i = 0; i < etiquettes.length; i++){
+    if(etiquettes[i].length < 5 || decennie.test(etiquettes[i])) continue;
+    for(let j = i + 1; j < etiquettes.length; j++){
+      if(decennie.test(etiquettes[j])) continue;
+      if(!etiquettes_voisines(etiquettes[i], etiquettes[j])) continue;
+      const rare = Math.min(frequenceTags.get(etiquettes[i]), frequenceTags.get(etiquettes[j]));
+      if(rare > 2) continue;
+      noter("Étiquettes trop proches", "signal", etiquettes[i] + " / " + etiquettes[j],
+        frequenceTags.get(etiquettes[i]) + " et " + frequenceTags.get(etiquettes[j]) + " titres — à fusionner ?");
+    }
+  }
+
+  for(const cycle of CYCLES){
+    const compte = catalogue.filter(oeuvre => cycle.filtre(oeuvre)).length;
+    if(compte === 0) noter("Cycle vide", "sérieux", cycle.nom, "aucun titre ne correspond");
+  }
+  for(const fil of FILS_ROUGES){
+    const compte = catalogue.filter(oeuvre => fil.tient(oeuvre)).length;
+    if(compte < SEUIL_FIL_ROUGE){
+      noter("Fil rouge sous le seuil", "signal", fil.nom,
+        compte + " titre" + (compte > 1 ? "s" : "") + " sur les " + SEUIL_FIL_ROUGE + " nécessaires : jamais affiché");
+    }
+  }
+
+  const parGravite = {bloquant: 0, "sérieux": 0, signal: 0};
+  for(const anomalie of anomalies) parGravite[anomalie.gravite]++;
+
+  return {
+    anomalies,
+    resume: {
+      titres: catalogue.length,
+      etiquettes: frequenceTags.size,
+      realisateurs: new Set(catalogue.map(oeuvre => oeuvre.r)).size,
+      total: anomalies.length,
+      parGravite
+    }
+  };
+}
+
 /**
  * Convertit une durée en minutes vers un affichage lisible.
  * @param {number} minutes
@@ -5094,7 +5254,62 @@ function ecran_donnees(){
     + '<label class="eyebrow eyebrow--interne" for="saisie-import">Restaurer — colle ici une sauvegarde</label>'
     + '<textarea class="champ champ--long" id="saisie-import" rows="6" placeholder=\'{"version":3,"profils":[…]}\'></textarea>'
     + '<button class="bouton bouton--second" data-agir="importer">Restaurer</button>'
-    + '<p class="note-info">La restauration remplace l\'intégralité des profils.</p>';
+    + '<p class="note-info">La restauration remplace l\'intégralité des profils.</p>'
+    + filet()
+    + '<h2 class="titre-question">Catalogue</h2>'
+    + '<p class="aide">Vérifie la cohérence des titres, y compris ceux que tu as ajoutés à la main.</p>'
+    + '<button class="bouton bouton--second" data-agir="aller" data-vue="audit">Vérifier le catalogue</button>';
+  return html + bandeau() + '</section>';
+}
+
+/** Ordre d'affichage des anomalies : le plus grave d'abord. */
+const ORDRE_GRAVITE = ["bloquant", "sérieux", "signal"];
+/** Nombre d'anomalies détaillées par nature avant repli. */
+const DETAIL_PAR_NATURE = 8;
+
+function ecran_audit(){
+  const catalogue = catalogue_complet();
+  const {anomalies, resume} = auditer_catalogue(catalogue);
+
+  let html = '<section class="ecran">' + entete("Vérification", "donnees")
+    + '<h2 class="titre-question" tabindex="-1" data-focus>État du catalogue</h2>'
+    + '<div class="stat"><span class="stat__cle">Titres</span><span class="stat__val">' + resume.titres + '</span></div>'
+    + '<div class="stat"><span class="stat__cle">Réalisateurs distincts</span><span class="stat__val">' + resume.realisateurs + '</span></div>'
+    + '<div class="stat"><span class="stat__cle">Étiquettes distinctes</span><span class="stat__val">' + resume.etiquettes + '</span></div>';
+
+  if(resume.total === 0){
+    html += '<p class="aide">Aucune anomalie. Le catalogue est cohérent.</p>';
+    return html + bandeau() + '</section>';
+  }
+
+  for(const gravite of ORDRE_GRAVITE){
+    const compte = resume.parGravite[gravite];
+    html += '<div class="stat"><span class="stat__cle">' + echapper(gravite.charAt(0).toUpperCase() + gravite.slice(1))
+      + '</span><span class="stat__val">' + compte + '</span></div>';
+  }
+
+  for(const gravite of ORDRE_GRAVITE){
+    const duNiveau = anomalies.filter(anomalie => anomalie.gravite === gravite);
+    if(duNiveau.length === 0) continue;
+
+    const natures = new Map();
+    for(const anomalie of duNiveau){
+      if(natures.has(anomalie.nature)) natures.get(anomalie.nature).push(anomalie);
+      else natures.set(anomalie.nature, [anomalie]);
+    }
+    for(const [nature, liste] of [...natures].sort((a, b) => b[1].length - a[1].length)){
+      html += '<p class="eyebrow eyebrow--interne">' + echapper(nature) + ' — ' + liste.length + '</p><ul class="liste">';
+      for(const anomalie of liste.slice(0, DETAIL_PAR_NATURE)){
+        html += '<li><span class="liste__titre">' + echapper(anomalie.sujet) + '</span>'
+          + '<span class="liste__meta">' + echapper(anomalie.detail) + '</span></li>';
+      }
+      if(liste.length > DETAIL_PAR_NATURE){
+        html += '<li><span class="liste__meta">et ' + (liste.length - DETAIL_PAR_NATURE) + ' autre'
+          + (liste.length - DETAIL_PAR_NATURE > 1 ? 's' : '') + '</span></li>';
+      }
+      html += '</ul>';
+    }
+  }
   return html + bandeau() + '</section>';
 }
 
@@ -5194,6 +5409,7 @@ const ECRANS = {
   profils:   () => ecran_profils(),
   creation:  () => ecran_creation(),
   donnees:   () => ecran_donnees(),
+  audit:     () => ecran_audit(),
   accueil:   (p) => ecran_accueil(p),
   session:   () => ecran_session(),
   programme: (p) => ecran_programme(profil_session || p),
@@ -5209,7 +5425,7 @@ const ECRANS = {
   duo:       () => ecran_duo()
 };
 
-const SANS_PROFIL = ["profils", "creation", "donnees"];
+const SANS_PROFIL = ["profils", "creation", "donnees", "audit"];
 
 function appliquer_theme(cle){
   const theme = THEMES[cle] || THEMES.vert;
