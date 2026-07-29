@@ -2489,6 +2489,87 @@ function inventorier_etiquettes(catalogue){
   return Object.entries(compte).sort((a, b) => b[1] - a[1]);
 }
 
+/* ── Distinctions ─────────────────────────────────────────────────
+   Le champ `prix` est du texte libre, parce qu'aucune nomenclature ne
+   couvre proprement une Palme, un Emmy et un César à la fois. Les
+   familles ci-dessous le rangent après coup, par reconnaissance de
+   motif. L'ordre compte : « Oscar du meilleur film étranger » doit être
+   reconnu avant « Oscar du meilleur film », sinon il tomberait dedans.
+   ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Familles de distinctions, testées dans l'ordre. `majeure` désigne les
+ * récompenses suprêmes d'une manifestation, celles qu'on cherche en premier.
+ */
+const FAMILLES_DISTINCTION = [
+  // En tête, sans quoi « 7 nominations aux Oscars, aucune statuette » serait
+  // rangé parmi les Oscars gagnés et compterait comme une récompense.
+  {id:"nomination",  nom:"Nommé sans être primé",    majeure:false, reconnait:p => /nomination/.test(p)},
+  {id:"palme",       nom:"Palme d'or",              majeure:true,  reconnait:p => /palme d.or/.test(p)},
+  {id:"grand-prix",  nom:"Grand Prix de Cannes",     majeure:true,  reconnait:p => /grand prix/.test(p) && /cannes|festival/.test(p)},
+  {id:"cannes",      nom:"Autre prix à Cannes",      majeure:false, reconnait:p => /cannes/.test(p)},
+  {id:"oscar-etr",   nom:"Oscar du film étranger",   majeure:true,  reconnait:p => /oscar/.test(p) && /etranger/.test(p)},
+  {id:"oscar-doc",   nom:"Oscar du documentaire",    majeure:true,  reconnait:p => /oscar/.test(p) && /documentaire/.test(p)},
+  {id:"oscar-anim",  nom:"Oscar de l'animation",     majeure:true,  reconnait:p => /oscar/.test(p) && /animation/.test(p)},
+  {id:"oscar-film",  nom:"Oscar du meilleur film",   majeure:true,  reconnait:p => /oscar/.test(p) && /meilleur film/.test(p)},
+  {id:"oscar",       nom:"Autre Oscar",              majeure:false, reconnait:p => /oscar/.test(p)},
+  {id:"cesar-film",  nom:"César du meilleur film",   majeure:true,  reconnait:p => /cesar/.test(p) && /meilleur film/.test(p)},
+  {id:"cesar",       nom:"Autre César",              majeure:false, reconnait:p => /cesar/.test(p)},
+  {id:"ours",        nom:"Ours d'or",                majeure:true,  reconnait:p => /ours d.or/.test(p)},
+  {id:"lion",        nom:"Lion d'or",                majeure:true,  reconnait:p => /lion d.or/.test(p)},
+  {id:"venise",      nom:"Autre prix à Venise",      majeure:false, reconnait:p => /lion|venise/.test(p)},
+  {id:"berlin",      nom:"Autre prix à Berlin",      majeure:false, reconnait:p => /berlin|ours/.test(p)},
+  {id:"emmy",        nom:"Emmy Award",               majeure:true,  reconnait:p => /emmy/.test(p)},
+  {id:"bafta",       nom:"BAFTA",                    majeure:false, reconnait:p => /bafta/.test(p)},
+  {id:"sundance",    nom:"Sundance",                 majeure:false, reconnait:p => /sundance/.test(p)},
+  {id:"autre",       nom:"Autre distinction",        majeure:false, reconnait:() => true}
+];
+
+/**
+ * Range une distinction dans sa famille. Fonction pure.
+ * @param {string} prix - libellé libre, par exemple « Palme d'or 1963 »
+ * @returns {object} la famille reconnue ; jamais null, « autre » sert de refuge
+ */
+function famille_distinction(prix){
+  const texte = normaliser(prix);
+  for(const famille of FAMILLES_DISTINCTION){
+    if(famille.reconnait(texte)) return famille;
+  }
+  return FAMILLES_DISTINCTION[FAMILLES_DISTINCTION.length - 1];
+}
+
+/**
+ * Les distinctions d'une œuvre qui relèvent d'une famille majeure.
+ * @param {object} oeuvre
+ * @returns {string[]}
+ */
+function distinctions_majeures(oeuvre){
+  return (oeuvre.prix || []).filter(prix => famille_distinction(prix).majeure);
+}
+
+/**
+ * Recense les familles de distinctions présentes au catalogue.
+ * Une œuvre primée deux fois dans la même famille n'y compte qu'une fois.
+ * @param {object[]} catalogue
+ * @returns {Array<{famille: object, oeuvres: object[]}>} triées, majeures d'abord
+ */
+function inventorier_distinctions(catalogue){
+  if(!Array.isArray(catalogue)) throw new Error("Catalogue attendu, reçu : " + typeof catalogue);
+  const parFamille = new Map();
+  for(const oeuvre of catalogue){
+    const vues = new Set();
+    for(const prix of oeuvre.prix || []){
+      const famille = famille_distinction(prix);
+      if(vues.has(famille.id)) continue;
+      vues.add(famille.id);
+      if(parFamille.has(famille.id)) parFamille.get(famille.id).oeuvres.push(oeuvre);
+      else parFamille.set(famille.id, {famille, oeuvres:[oeuvre]});
+    }
+  }
+  return [...parFamille.values()].sort((a, b) =>
+    (b.famille.majeure - a.famille.majeure) || (b.oeuvres.length - a.oeuvres.length));
+}
+
 /**
  * Valide une œuvre saisie à la main avant de l'ajouter au catalogue.
  * @param {object} oeuvre
@@ -2759,6 +2840,11 @@ function filtrer_avance(catalogue, criteres = {}){
     if(c.familleSeule && !oeuvre.fam) return false;
     if(c.plateforme && oeuvre.pf !== c.plateforme) return false;
     if(c.primeSeulement && !(oeuvre.prix && oeuvre.prix.length > 0)) return false;
+    if(c.majeuresSeulement && distinctions_majeures(oeuvre).length === 0) return false;
+    if(c.familleDistinction){
+      const familles = (oeuvre.prix || []).map(prix => famille_distinction(prix).id);
+      if(familles.indexOf(c.familleDistinction) === -1) return false;
+    }
 
     if(typeof c.dureeMax === "number" || typeof c.dureeMin === "number"){
       const minutes = duree_minutes(oeuvre.d);
@@ -4872,6 +4958,7 @@ function ecran_accueil(profil){
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="humeur_fine">Régler mon humeur au détail</button>'
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="atelier">Ouvrir l\'atelier</button>'
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="cycles">Lancer un cycle</button>'
+    + '<button class="bouton bouton--second" data-agir="aller" data-vue="palmares">Le palmarès</button>'
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="marathon">Composer une soirée</button>'
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="duo">Soirée à deux</button>'
     + '<button class="bouton bouton--second" data-agir="aller" data-vue="fil">Tirer le fil</button>'
@@ -6018,7 +6105,8 @@ amorcer();
 let atelier = {
   texte:"", formats:[], registres:[], climats:[], epoques:[], fins:[],
   decennies:[], exigenceMax:null, familleSeule:false, dureeMax:null,
-  tagsInclus:[], plateforme:null, tri:"titre"
+  tagsInclus:[], plateforme:null, tri:"titre",
+  majeuresSeulement:false, familleDistinction:null
 };
 let humeur_fine = {
   registres:{eblouissement:0, tension:0, refuge:0, rire:0, apprendre:0},
@@ -6071,7 +6159,9 @@ function criteres_atelier(){
     fins: atelier.fins.slice(), decennies: atelier.decennies.slice(),
     exigenceMax: atelier.exigenceMax, familleSeule: atelier.familleSeule,
     dureeMax: atelier.dureeMax, tagsInclus: atelier.tagsInclus.slice(),
-    plateforme: atelier.plateforme
+    plateforme: atelier.plateforme,
+    majeuresSeulement: atelier.majeuresSeulement,
+    familleDistinction: atelier.familleDistinction
   };
 }
 
@@ -6122,6 +6212,22 @@ function ecran_atelier(profil){
       const actif = atelier.plateforme === nom;
       html += '<button class="puce' + (actif ? " puce--active" : "") + '" data-agir="atelier-plateforme" data-nom="' + echapper(nom) + '">'
         + echapper(nom) + ' <span style="opacity:.5">' + compte + '</span></button>';
+    }
+    html += '</div>';
+  }
+
+  // Les distinctions : d'abord le raccourci vers les récompenses suprêmes,
+  // puis le détail par famille, avec le nombre d'œuvres concernées.
+  const distinctions = inventorier_distinctions(catalogue);
+  if(distinctions.length > 0){
+    html += '<p class="eyebrow eyebrow--interne">Distinction</p><div class="puces">'
+      + '<button class="puce' + (atelier.majeuresSeulement ? " puce--active" : "")
+      + '" data-agir="atelier-majeures">Distinctions majeures</button>';
+    for(const {famille, oeuvres} of distinctions){
+      const actif = atelier.familleDistinction === famille.id;
+      html += '<button class="puce' + (actif ? " puce--active" : "") + '" data-agir="atelier-distinction" data-famille="'
+        + echapper(famille.id) + '">' + echapper(famille.nom)
+        + ' <span style="opacity:.5">' + oeuvres.length + '</span></button>';
     }
     html += '</div>';
   }
@@ -6303,6 +6409,74 @@ function ecran_realisateur(profil){
   return html + bandeau() + '</section>';
 }
 
+/* ── Le palmarès ──────────────────────────────────────────────── */
+
+/** Famille de distinctions actuellement ouverte, ou null. */
+let famille_prix_ouverte = null;
+
+function ecran_palmares(){
+  const catalogue = catalogue_complet();
+  const distinctions = inventorier_distinctions(catalogue);
+  const majeures = catalogue.filter(oeuvre => distinctions_majeures(oeuvre).length > 0);
+
+  let html = '<section class="ecran">' + entete("Accueil", "accueil")
+    + '<h2 class="titre-question" tabindex="-1" data-focus>Le palmarès</h2>';
+
+  if(distinctions.length === 0){
+    html += '<p class="vide">Aucune distinction renseignée au catalogue.</p>';
+    return html + bandeau() + '</section>';
+  }
+
+  html += '<p class="aide">Les récompenses suprêmes d\'abord, puis le reste. '
+    + majeures.length + ' titre' + (majeures.length > 1 ? "s" : "") + ' porte'
+    + (majeures.length > 1 ? "nt" : "") + ' une distinction majeure.</p>';
+
+  for(const majeure of [true, false]){
+    const groupe = distinctions.filter(entree => entree.famille.majeure === majeure);
+    if(groupe.length === 0) continue;
+    html += '<p class="eyebrow eyebrow--interne">' + (majeure ? "Distinctions majeures" : "Autres distinctions") + '</p>'
+      + '<ul class="liste">';
+    for(const {famille, oeuvres} of groupe){
+      html += '<li><button class="liste__titre" data-agir="famille-prix" data-famille="' + echapper(famille.id) + '">'
+        + echapper(famille.nom) + '</button>'
+        + '<span class="liste__meta">' + oeuvres.length + '</span></li>';
+    }
+    html += '</ul>';
+  }
+  return html + bandeau() + '</section>';
+}
+
+function ecran_famille_prix(profil){
+  const catalogue = catalogue_complet();
+  const famille = FAMILLES_DISTINCTION.find(f => f.id === famille_prix_ouverte);
+  if(!famille){
+    return '<section class="ecran">' + entete("Palmarès", "palmares")
+      + '<p class="vide">Cette famille de distinctions n\'existe pas.</p>' + bandeau() + '</section>';
+  }
+  const oeuvres = filtrer_avance(catalogue, {familleDistinction: famille.id})
+    .sort((a, b) => b.a - a.a);
+
+  let html = '<section class="ecran">' + entete("Palmarès", "palmares")
+    + '<h2 class="titre-question" tabindex="-1" data-focus>' + echapper(famille.nom) + '</h2>'
+    + '<p class="aide">' + oeuvres.length + ' titre' + (oeuvres.length > 1 ? "s" : "")
+    + ', du plus récent au plus ancien.</p>';
+
+  if(oeuvres.length === 0){
+    html += '<p class="vide">Rien dans cette famille.</p>';
+    return html + bandeau() + '</section>';
+  }
+  html += '<ul class="liste">';
+  for(const oeuvre of oeuvres){
+    // On n'affiche que les distinctions de la famille ouverte : dans la liste
+    // des Palmes, citer les Oscars du même film brouillerait la lecture.
+    const retenues = (oeuvre.prix || []).filter(prix => famille_distinction(prix).id === famille.id);
+    html += '<li><button class="liste__titre" data-agir="fiche" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">'
+      + echapper(oeuvre.t) + '</button>'
+      + '<span class="liste__meta">' + echapper(retenues.join(" · ")) + '</span></li>';
+  }
+  return html + '</ul>' + bandeau() + '</section>';
+}
+
 /* ═══════════════════════════════════════════════════════════════
    13. BRANCHEMENT DES NOUVEAUX ÉCRANS
    ═══════════════════════════════════════════════════════════════ */
@@ -6310,6 +6484,8 @@ function ecran_realisateur(profil){
 let marathon_recherche = "";
 
 Object.assign(ECRANS, {
+  palmares:     () => ecran_palmares(),
+  famille_prix: (p) => ecran_famille_prix(p),
   atelier:     (p) => ecran_atelier(p),
   humeur_fine: (p) => ecran_humeur_fine(p),
   marathon:    (p) => ecran_marathon(p),
@@ -6371,6 +6547,26 @@ Object.assign(ACTIONS, {
     rendre({focus:false});
   },
 
+  "atelier-majeures": () => {
+    atelier.majeuresSeulement = !atelier.majeuresSeulement;
+    // Les deux critères se contrarieraient : demander « les majeures » puis une
+    // famille non majeure ne rendrait rien. On désactive donc l'autre.
+    if(atelier.majeuresSeulement) atelier.familleDistinction = null;
+    rendre({focus:false});
+  },
+
+  "atelier-distinction": (el) => {
+    const famille = el.dataset.famille;
+    atelier.familleDistinction = atelier.familleDistinction === famille ? null : famille;
+    if(atelier.familleDistinction) atelier.majeuresSeulement = false;
+    rendre({focus:false});
+  },
+
+  "famille-prix": (el) => {
+    famille_prix_ouverte = el.dataset.famille;
+    aller("famille_prix");
+  },
+
   "atelier-tag": (el) => {
     const t = el.dataset.etiquette;
     atelier.tagsInclus = atelier.tagsInclus.indexOf(t) !== -1
@@ -6383,7 +6579,8 @@ Object.assign(ACTIONS, {
   "atelier-reset": () => {
     atelier = {texte:"", formats:[], registres:[], climats:[], epoques:[], fins:[],
       decennies:[], exigenceMax:null, familleSeule:false, dureeMax:null,
-      tagsInclus:[], plateforme:null, tri:"titre"};
+      tagsInclus:[], plateforme:null, tri:"titre",
+      majeuresSeulement:false, familleDistinction:null};
     rendre();
   },
 
