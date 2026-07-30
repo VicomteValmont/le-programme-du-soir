@@ -57,7 +57,38 @@ Une branche par intention, nommée en français avec des tirets : `lot-documenta
 
 ## Écrire une entrée de catalogue
 
-Voir les règles de saisie dans l'issue #6. Deux pièges à retenir :
+Voir les règles de saisie dans l'issue #6.
+
+### Valeurs contraintes
+
+Ces champs n'acceptent qu'une liste fermée. Toute autre valeur est refusée par `valider_oeuvre` et remonte en « bloquant » dans l'audit.
+
+| Champ | Valeurs |
+|---|---|
+| `f` — format | `film` `serie` `doc` |
+| `c` — climat | `soleil` `pluie` `ville` `ailleurs` |
+| `e` — époque | `passe` `present` `imaginaire` |
+| `fin` | `sombre` `douce` `ouverte` |
+| `g` — registres | `eblouissement` `tension` `refuge` `rire` `apprendre` |
+| `x` — exigence | `1` `2` `3` |
+
+Le piège le plus fréquent est de mettre une **étiquette** dans un de ces champs : `foret` ou `mer` dans `c`, `aventure` dans `g`. Les étiquettes vont dans `tg`, et nulle part ailleurs.
+
+### Contrôler un lot avant de le livrer
+
+L'application contient son propre validateur. Il faut s'en servir **avant** de committer, pas après :
+
+1. Insérer le lot dans le tableau `CATALOGUE`.
+2. Ouvrir le fichier dans un navigateur. Si l'application ne s'affiche pas, une entrée est mal formée et casse tout le script.
+3. Aller dans **Données → Vérifier le catalogue**.
+4. Corriger jusqu'à **zéro « bloquant » et zéro « sérieux »**, et zéro signal portant sur les entrées ajoutées.
+
+Ce que l'audit attrape et qu'une relecture rate : valeurs hors liste, clés en double, voisins pointant sur l'œuvre elle-même, voisins absents du catalogue, doublons probables (même année et même réalisateur), titres suffixés, distinctions sans millésime.
+
+### Pièges connus
 
 - **La dernière entrée du tableau `CATALOGUE` n'a pas de virgule finale.** Insérer après elle sans l'ajouter casse tout le script, alors que chaque entrée reste valide isolément.
 - **Ne pas créer d'étiquette nouvelle sans nécessité.** Le vocabulaire fait tenir les cycles et les fils rouges ; un synonyme involontaire les vide en silence.
+- **Ne jamais ajouter une variante d'un titre déjà présent** — `restauré`, `saison 2`, `version longue`, `(reprise)`. C'est un doublon, pas une œuvre. L'audit les signale, mais mieux vaut ne pas les écrire.
+- **Supprimer une entrée pendant la préparation d'un lot casse les voisins qui la citaient.** Refaire l'audit après toute suppression.
+- **Un guillemet double dans un champ texte casse la ligne entière.** Utiliser les guillemets français « … ».
