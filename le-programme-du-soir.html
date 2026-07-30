@@ -2725,6 +2725,15 @@ function valider_oeuvre(oeuvre){
   if(!Number.isFinite(annee) || annee < 1890 || annee > 2100) problemes.push("Année attendue entre 1890 et 2100.");
   if(["film","serie","doc"].indexOf(oeuvre.f) === -1) problemes.push("Format attendu : film, série ou documentaire.");
   if(!Array.isArray(oeuvre.g) || oeuvre.g.length === 0) problemes.push("Au moins un registre est nécessaire.");
+  else {
+    // Les valeurs de registre n'étaient pas contrôlées, seulement leur présence.
+    // Une étiquette glissée là — « aventure » au lieu de « eblouissement » —
+    // passait toute la validation et rendait l'œuvre introuvable par son envie.
+    const connus = ["eblouissement","tension","refuge","rire","apprendre"];
+    for(const registre of oeuvre.g){
+      if(connus.indexOf(registre) === -1) problemes.push("Registre inconnu : " + registre + ".");
+    }
+  }
   if(["soleil","pluie","ville","ailleurs"].indexOf(oeuvre.c) === -1) problemes.push("Climat manquant.");
   if(["passe","present","imaginaire"].indexOf(oeuvre.e) === -1) problemes.push("Époque manquante.");
   if([1,2,3].indexOf(Number(oeuvre.x)) === -1) problemes.push("Exigence attendue entre 1 et 3.");
@@ -2840,7 +2849,15 @@ function auditer_catalogue(catalogue){
       noter("Repère trop long", "signal", sujet, oeuvre.hist.length + " caractères : trois phrases suffisent");
     }
 
-    if(/\(reprise\)/i.test(oeuvre.t)) noter("Titre suffixé « (reprise) »", "signal", sujet, "suffixe à retirer ou doublon à supprimer");
+    // Les suffixes de remplissage : chacune de ces formes a déjà servi à gonfler
+    // le catalogue avec une œuvre déjà présente. « (reprise) » avait produit
+    // 79 doublons, « restauré » et « saison N » sont apparus au lot suivant.
+    // Pas de \b après « restauré » : en JavaScript, la frontière de mot ne
+    // reconnaît pas les lettres accentuées, et le motif ne trouverait rien.
+    // « Le Grand Restaurant » n'est pas capturé : le motif exige é ou e après
+    // « restaur », jamais le a de « restaurant ».
+    const suffixe = /\(reprise\)|restaur[ée]e?s?|saison \d|version longue|director'?s cut/i.exec(oeuvre.t);
+    if(suffixe) noter("Titre suffixé", "signal", sujet, "« " + suffixe[0] + " » : suffixe à retirer ou doublon à supprimer");
     if(oeuvre.f === "film" && duree_minutes(oeuvre.d) === null){
       noter("Durée illisible", "signal", sujet, "« " + oeuvre.d + " » : le sablier ignorera ce titre");
     }
