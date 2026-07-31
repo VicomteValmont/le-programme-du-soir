@@ -2911,6 +2911,107 @@ function inventorier_distinctions(catalogue){
     (b.famille.majeure - a.famille.majeure) || (b.oeuvres.length - a.oeuvres.length));
 }
 
+/* ── Les grands classiques ────────────────────────────────────────
+   Le catalogue ne contient ni note de critique ni recette de salle. La
+   stature d'une œuvre s'y déduit de ce qu'il sait vraiment : ce qu'elle
+   a gagné, ce qu'elle a changé, et la fréquence à laquelle les autres
+   titres la citent comme voisine — un film que trente fiches invoquent
+   est une référence, quels que soient ses prix.
+   ─────────────────────────────────────────────────────────────── */
+
+/** Poids de chaque signal dans le score de stature. */
+const POIDS_STATURE = {
+  distinctionMajeure: 4,
+  distinction: 1.5,
+  repereHistorique: 3,
+  citation: 0.6,
+  citationPlafond: 6,
+  anterieurA1980: 1.5
+};
+
+/**
+ * Compte, pour chaque œuvre, le nombre de fiches qui la citent en voisine.
+ * @param {object[]} catalogue
+ * @returns {Map<string, number>} indexée par titre normalisé
+ */
+function compter_citations(catalogue){
+  const compte = new Map();
+  for(const oeuvre of catalogue){
+    for(const voisin of oeuvre.v || []){
+      const cle = normaliser(voisin);
+      compte.set(cle, (compte.get(cle) || 0) + 1);
+    }
+  }
+  return compte;
+}
+
+/**
+ * Note la stature d'une œuvre et dit ce qui la justifie.
+ * Fonction pure.
+ * @param {object} oeuvre
+ * @param {Map<string, number>} citations
+ * @returns {{score: number, raisons: string[]}}
+ */
+function stature(oeuvre, citations){
+  const raisons = [];
+  let score = 0;
+
+  const majeures = distinctions_majeures(oeuvre);
+  if(majeures.length > 0){
+    score += POIDS_STATURE.distinctionMajeure * majeures.length;
+    raisons.push(majeures[0]);
+  }
+  const autres = (oeuvre.prix || []).length - majeures.length;
+  if(autres > 0){
+    score += POIDS_STATURE.distinction * autres;
+    if(majeures.length === 0) raisons.push(oeuvre.prix[0]);
+  }
+  if(oeuvre.hist){
+    score += POIDS_STATURE.repereHistorique;
+    raisons.push("Compte dans l'histoire du cinéma");
+  }
+
+  const citee = citations.get(normaliser(oeuvre.t)) || 0;
+  if(citee > 0){
+    score += Math.min(citee * POIDS_STATURE.citation, POIDS_STATURE.citationPlafond);
+    if(citee >= 5) raisons.push("Référence pour " + citee + " autres titres du catalogue");
+  }
+  if(oeuvre.a < 1980) score += POIDS_STATURE.anterieurA1980;
+
+  return {score, raisons};
+}
+
+/**
+ * Compose une liste de grands classiques que la personne n'a pas encore vus.
+ * Déterministe à graine égale. Diversifiée par réalisateur et par décennie,
+ * pour ne pas servir dix fois le même auteur ni dix fois la même époque.
+ * @param {object} parametres - {profil, catalogue, graine, combien, format}
+ * @returns {object[]} œuvres enrichies d'un champ `raisons`
+ */
+function grands_classiques({profil, catalogue, graine = 1, combien = 8, format = null}){
+  if(!Array.isArray(catalogue)) throw new Error("Catalogue attendu, reçu : " + typeof catalogue);
+  const alea = fabriquer_alea(graine);
+  const citations = compter_citations(catalogue);
+  const interdits = profil ? calculer_interdits(profil, catalogue) : [];
+
+  const candidats = [];
+  for(const oeuvre of catalogue){
+    if(format && oeuvre.f !== format) continue;
+    if(interdits.indexOf(cle_oeuvre(oeuvre)) !== -1) continue;
+    const {score, raisons} = stature(oeuvre, citations);
+    // Sous ce seuil, l'œuvre n'a ni prix, ni repère, ni notoriété interne :
+    // rien ne permet de dire qu'il « faut » l'avoir vue.
+    if(score < 4) continue;
+    candidats.push({oeuvre, score: score + alea() * 1.5, raisons});
+  }
+  candidats.sort((a, b) => b.score - a.score);
+
+  return diversifier(candidats, combien).map(oeuvre => {
+    const trouve = candidats.find(c => c.oeuvre === oeuvre);
+    return Object.assign({}, oeuvre, {raisons: trouve ? trouve.raisons : []});
+  });
+}
+
 /**
  * Valide une œuvre saisie à la main avant de l'ajouter au catalogue.
  * @param {object} oeuvre
@@ -3256,45 +3357,6 @@ function diversifier(candidats, combien){
   return retenus;
 }
 
-/**
- * Compose des recommandations à partir de pondérations fines plutôt que d'un seul choix.
- * Chaque registre et chaque climat reçoivent un poids de 0 à 3.
- * @param {object} parametres - {profil, poidsRegistres, poidsClimats, audace, compagnie,
- *   formats, catalogue, ecartes, graine, combien}
- * @returns {object[]}
- */
-function composer_pondere({profil, poidsRegistres = {}, poidsClimats = {}, audace = "cote",
-                           compagnie = "seul", formats = [], catalogue, ecartes = [],
-                           graine = 1, combien = 3}){
-  const alea = fabriquer_alea(graine);
-  const interdits = calculer_interdits(profil, catalogue).concat(ecartes);
-  const af = profil.affinites;
-
-  const candidats = [];
-  for(const oeuvre of catalogue){
-    if(formats.length > 0 && formats.indexOf(oeuvre.f) === -1) continue;
-    if(interdits.indexOf(cle_oeuvre(oeuvre)) !== -1) continue;
-    if(compagnie === "famille" && !oeuvre.fam) continue;
-    if(oeuvre.x > af.exigence) continue;
-    if((af.exclus || []).some(ex => ex === "sombre" ? oeuvre.fin === "sombre" : oeuvre.tg.includes(ex))) continue;
-
-    let score = 0;
-    for(const registre of oeuvre.g){ score += (poidsRegistres[registre] || 0) * 3; }
-    score += (poidsClimats[oeuvre.c] || 0) * 2.5;
-    for(const registre of oeuvre.g){ score += (af.registres[registre] || 0) * 0.5; }
-    score += (af.epoques[oeuvre.e] || 0) * 0.5;
-
-    const proximite = compter_communs(oeuvre.tg, af.aimes);
-    if(audace === "sure") score += proximite * 2;
-    if(audace === "cote") score += (proximite >= 1 && proximite <= 4) ? 4 : 0;
-    if(audace === "angle") score += proximite <= 1 ? 7 : -proximite * 1.5;
-    score -= compter_communs(oeuvre.tg, af.tiedes || []) * 1.6;
-
-    candidats.push({oeuvre, score: score + alea() * 3});
-  }
-  candidats.sort((a, b) => b.score - a.score);
-  return diversifier(candidats, combien);
-}
 
 /**
  * Calcule la durée totale d'une sélection.
@@ -4295,130 +4357,7 @@ function palette_oeuvre(oeuvre){
 
 /* ── F4. Les six degrés ───────────────────────────────────────── */
 
-/** Construit la table d'adjacence du catalogue à partir des voisins déclarés et déduits. */
-function construire_liens(catalogue){
-  const par_titre = new Map();
-  for(const oeuvre of catalogue) par_titre.set(normaliser(oeuvre.t), oeuvre);
 
-  const liens = new Map();
-  for(const oeuvre of catalogue){
-    const cle = cle_oeuvre(oeuvre);
-    const voisins = new Set();
-    for(const nom of oeuvre.v || []){
-      const trouve = par_titre.get(normaliser(nom));
-      if(trouve && cle_oeuvre(trouve) !== cle) voisins.add(cle_oeuvre(trouve));
-    }
-    liens.set(cle, voisins);
-  }
-  // Les liens déclarés sont rendus symétriques : si A cite B, on peut aller de B à A.
-  for(const [cle, voisins] of liens){
-    for(const voisin of voisins){
-      if(liens.has(voisin)) liens.get(voisin).add(cle);
-    }
-  }
-  // Renfort : même réalisateur, ou deux étiquettes partagées.
-  const par_realisateur = new Map();
-  for(const oeuvre of catalogue){
-    const nom = normaliser(oeuvre.r);
-    if(!par_realisateur.has(nom)) par_realisateur.set(nom, []);
-    par_realisateur.get(nom).push(cle_oeuvre(oeuvre));
-  }
-  for(const cles of par_realisateur.values()){
-    if(cles.length < 2) continue;
-    for(const cle of cles){
-      for(const autre of cles){ if(autre !== cle) liens.get(cle).add(autre); }
-    }
-  }
-  return liens;
-}
-
-/**
- * Cherche le plus court chemin entre deux œuvres, de voisin en voisin.
- * Parcours en largeur : le chemin renvoyé est garanti minimal.
- * @param {object} depart
- * @param {object} arrivee
- * @param {object[]} catalogue
- * @param {number} [profondeur_max=6]
- * @returns {object[]|null} la suite d'œuvres du départ à l'arrivée, ou null
- * @throws {Error} si l'une des deux bornes manque
- */
-function chemin_entre(depart, arrivee, catalogue, profondeur_max = 6){
-  if(!depart || !arrivee) throw new Error("Deux œuvres attendues, reçu : " + depart + " et " + arrivee);
-  const cle_depart = cle_oeuvre(depart);
-  const cle_arrivee = cle_oeuvre(arrivee);
-  if(cle_depart === cle_arrivee) return [depart];
-
-  const liens = construire_liens(catalogue);
-  const par_cle = new Map(catalogue.map(oeuvre => [cle_oeuvre(oeuvre), oeuvre]));
-  const vus = new Set([cle_depart]);
-  let front = [[cle_depart]];
-
-  for(let pas = 0; pas < profondeur_max; pas++){
-    const suivant = [];
-    for(const chemin of front){
-      const voisins = liens.get(chemin[chemin.length - 1]) || new Set();
-      for(const voisin of voisins){
-        if(vus.has(voisin)) continue;
-        const allonge = chemin.concat([voisin]);
-        if(voisin === cle_arrivee) return allonge.map(cle => par_cle.get(cle));
-        vus.add(voisin);
-        suivant.push(allonge);
-      }
-    }
-    if(suivant.length === 0) break;
-    front = suivant;
-  }
-  return null;
-}
-
-/* ── F5. Le festival ──────────────────────────────────────────── */
-
-/** Lignes directrices proposées pour une journée de festival. */
-const LIGNES_FESTIVAL = [
-  {id:"ouverture", nom:"Soirée d'ouverture", tient: o => o.g.indexOf("eblouissement") !== -1 && o.x <= 2},
-  {id:"nuit_blanche", nom:"Nuit blanche", tient: o => o.g.indexOf("tension") !== -1},
-  {id:"cocon", nom:"Journée cocon", tient: o => o.g.indexOf("refuge") !== -1 && o.fin !== "sombre"},
-  {id:"grand_large", nom:"Grand large", tient: o => o.c === "ailleurs"},
-  {id:"lettres", nom:"D'après un livre", tient: o => Boolean(o.src)},
-  {id:"rire", nom:"Journée légère", tient: o => o.g.indexOf("rire") !== -1},
-  {id:"decouverte", nom:"Terra incognita", tient: o => o.x === 3},
-  {id:"cloture", nom:"Clôture en beauté", tient: o => o.g.indexOf("eblouissement") !== -1 && o.fin === "douce"}
-];
-
-/**
- * Programme un festival de plusieurs jours, une ligne directrice par jour.
- * @param {object[]} catalogue
- * @param {object} profil - sert à écarter ce qui a déjà été vu
- * @param {number} jours - entre 2 et 7
- * @param {number} [graine=1]
- * @returns {Array<{ligne: object, oeuvres: object[]}>}
- * @throws {Error} si le nombre de jours sort de la plage permise
- */
-function programmer_festival(catalogue, profil, jours, graine = 1){
-  if(!Number.isInteger(jours) || jours < 2 || jours > 7){
-    throw new Error("Nombre de jours attendu entre 2 et 7, reçu : " + jours);
-  }
-  const alea = fabriquer_alea(graine);
-  const vues = new Set((profil && profil.journal || [])
-    .filter(entree => entree.statut === "deja_vu").map(entree => entree.cle));
-  const deja_programme = new Set();
-  const programme = [];
-
-  for(let jour = 0; jour < jours; jour++){
-    const ligne = LIGNES_FESTIVAL[jour % LIGNES_FESTIVAL.length];
-    const candidats = catalogue
-      .filter(oeuvre => ligne.tient(oeuvre)
-        && !vues.has(cle_oeuvre(oeuvre))
-        && !deja_programme.has(cle_oeuvre(oeuvre)))
-      .map(oeuvre => ({oeuvre, rang: alea()}))
-      .sort((a, b) => a.rang - b.rang)
-      .slice(0, 2)
-      .map(entree => entree.oeuvre);
-    candidats.forEach(oeuvre => deja_programme.add(cle_oeuvre(oeuvre)));
-    programme.push({ligne, oeuvres: candidats});
-  }
-  return programme;
-}
 
 /* ── F6. Les éphémérides ──────────────────────────────────────── */
 
@@ -5528,7 +5467,6 @@ function ecran_fiche(profil){
     html += '<button class="bouton bouton--fin" data-agir="oublier" data-cle="' + echapper(fiche_cle) + '">Oublier</button>';
   }
   html += '</div><div class="actions">'
-    + '<button class="bouton bouton--fin" data-agir="vers-marathon" data-cle="' + echapper(fiche_cle) + '">Ajouter à la soirée</button>'
     + '<button class="bouton bouton--fin" data-agir="vers-collection" data-cle="' + echapper(fiche_cle) + '">Ranger dans une collection</button>'
     + '<button class="bouton bouton--fin" data-agir="vers-comparaison" data-cle="' + echapper(fiche_cle) + '">Comparer ce titre</button>'
     + '<button class="bouton bouton--fin" data-agir="fil-depuis" data-cle="' + echapper(fiche_cle) + '">Tirer le fil depuis ici</button>'
@@ -5632,7 +5570,6 @@ function ecran_avoir(profil){
         + '<button class="rang" data-agir="avoir-tete" data-rang="' + rang + '" ' + (rang === 0 ? "disabled" : "") + ' aria-label="En tête">⤒</button>'
         + '<button class="rang" data-agir="avoir-monter" data-rang="' + rang + '" ' + (rang === 0 ? "disabled" : "") + ' aria-label="Monter">↑</button>'
         + '<button class="rang" data-agir="avoir-descendre" data-rang="' + rang + '" ' + (rang === oeuvres.length - 1 ? "disabled" : "") + ' aria-label="Descendre">↓</button>'
-        + '<button class="rang" data-agir="vers-marathon" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '" aria-label="Vers la soirée">▶</button>'
         + '<button class="rang rang--retirer" data-agir="avoir" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '" aria-label="Retirer">✕</button>'
         + '</div></li>';
     });
@@ -5925,16 +5862,13 @@ function ecran_duo(){
 
 const SECTIONS = [
   {id:"ce_soir", nom:"Ce soir", resume:"Trouver quoi regarder maintenant", entrees:[
-    {agir:"ouvrir-session", nom:"Composer la séance",        detail:"Quelques questions, trois propositions"},
-    {agir:"surprise",       nom:"Surprends-moi",             detail:"Un titre tout de suite, sans rien demander"},
-    {vue:"humeur_fine",     nom:"Régler l'envie au détail",  detail:"Des curseurs plutôt qu'un questionnaire"},
-    {vue:"sablier",         nom:"J'ai tant de temps",        detail:"Ce qui tient dans le temps disponible"},
-    {vue:"ambiance",        nom:"Décrire une ambiance",      detail:"Quelques mots en texte libre"},
-    {vue:"marathon",        nom:"Composer une soirée",       detail:"Plusieurs titres qui s'enchaînent"},
-    {vue:"duo",             nom:"Soirée à deux",             detail:"Croiser deux profils de goût"},
-    {vue:"defis",           nom:"Le défi du soir",           detail:"Une contrainte imposée, à relever"},
-    {vue:"double",          nom:"Deux films d'affilée",      detail:"Une paire qui se répond"},
-    {vue:"aveugle",         nom:"Sans le titre",             detail:"Décrit à l'aveugle, révélé après"}
+    {vue:"classiques", nom:"Les grands classiques", detail:"Ce qu'il faut avoir vu, et pourquoi"},
+    {vue:"sablier",    nom:"J'ai tant de temps",    detail:"Ce qui tient dans le temps disponible"},
+    {vue:"ambiance",   nom:"Décrire une ambiance",  detail:"Quelques mots en texte libre"},
+    {vue:"duo",        nom:"Soirée à deux",         detail:"Croiser deux profils de goût"},
+    {vue:"defis",      nom:"Le défi du soir",       detail:"Une contrainte imposée, à relever"},
+    {vue:"double",     nom:"Deux films d'affilée",  detail:"Une paire qui se répond"},
+    {vue:"aveugle",    nom:"Sans le titre",         detail:"Décrit à l'aveugle, révélé après"}
   ]},
   {id:"chercher", nom:"Chercher", resume:"Fouiller le catalogue", entrees:[
     {vue:"explorer",     nom:"Recherche simple",        detail:"Par titre, réalisateur ou étiquette"},
@@ -5962,10 +5896,8 @@ const SECTIONS = [
   ]},
   {id:"curiosites", nom:"Curiosités", resume:"Pour flâner plutôt que pour choisir", entrees:[
     {vue:"fil",          nom:"De fil en aiguille",   detail:"Avancer de voisin en voisin"},
-    {vue:"degres",       nom:"Relier deux films",    detail:"Trouver le chemin de l'un à l'autre"},
     {vue:"kaleidoscope", nom:"Au hasard, mais varié",detail:"Douze titres sans rapport entre eux"},
     {vue:"comparateur",  nom:"Comparer deux titres", detail:"Ce qu'ils ont en commun"},
-    {vue:"festival",     nom:"Programmer un festival", detail:"Plusieurs jours de projection"},
     {vue:"almanach",     nom:"Une année de cinéma",  detail:"Un titre par semaine, sur l'année"},
     {vue:"ephemerides",  nom:"Un jour comme aujourd'hui", detail:"Ce que la date évoque"},
     {vue:"rituels",      nom:"Mes rituels",          detail:"Un rendez-vous hebdomadaire"}
@@ -6563,12 +6495,6 @@ let atelier = {
   tagsInclus:[], plateforme:null, tri:"titre",
   majeuresSeulement:false, familleDistinction:null
 };
-let humeur_fine = {
-  registres:{eblouissement:0, tension:0, refuge:0, rire:0, apprendre:0},
-  climats:{soleil:0, pluie:0, ville:0, ailleurs:0},
-  formats:[], audace:"cote", compagnie:"seul"
-};
-let marathon = [];
 let realisateur_courant = null;
 let retour_realisateur = "accueil";
 
@@ -6707,8 +6633,7 @@ function ecran_atelier(profil){
 
   if(resultats.length > 0){
     html += '<div class="actions">'
-      + '<button class="bouton bouton--fin" data-agir="atelier-pepite">Tire une pépite au hasard</button>'
-      + '<button class="bouton bouton--fin" data-agir="atelier-soiree">En faire une soirée</button></div>'
+      + '<button class="bouton bouton--fin" data-agir="atelier-pepite">Tire une pépite au hasard</button></div>'
       + '<div class="epingle"><input class="champ champ--court" id="saisie-epingle" '
       + 'placeholder="Nommer cette recherche…" value="' + echapper(brouillon_recherche) + '">'
       + '<button class="bouton bouton--fin" data-agir="epingler-recherche">Épingler</button></div>';
@@ -6723,8 +6648,7 @@ function ecran_atelier(profil){
       const meta = entree ? LIBELLES_STATUT[entree.statut] : (LIBELLES_FORMAT[oeuvre.f] + " · " + oeuvre.a);
       html += '<li><button class="liste__titre" data-agir="fiche" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">'
         + echapper(oeuvre.t) + '</button>'
-        + '<span class="liste__meta">' + echapper(meta) + '</span>'
-        + '<button class="lien lien--mini" data-agir="vers-marathon" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">+ soirée</button></li>';
+        + '<span class="liste__meta">' + echapper(meta) + '</span></li>';
     }
     html += '</ul>';
     if(resultats.length > 80) html += '<p class="note-info">Les 80 premiers sont affichés — affine encore.</p>';
@@ -6732,117 +6656,8 @@ function ecran_atelier(profil){
   return html + bandeau() + '</section>';
 }
 
-/** Sélecteur de poids de 0 à 3 pour une facette de l'humeur fine. */
-function curseur_poids(action, cle, valeur){
-  let html = '<div class="curseur"><span class="curseur__nom">' + echapper(cle) + '</span><div class="curseur__crans">';
-  for(let n = 0; n <= 3; n++){
-    html += '<button class="cran' + (valeur === n ? " cran--actif" : "") + '" data-agir="' + action + '"'
-      + ' data-cle="' + echapper(cle) + '" data-niveau="' + n + '" aria-label="' + n + '">' + n + '</button>';
-  }
-  return html + '</div></div>';
-}
 
-function ecran_humeur_fine(profil){
-  let html = '<section class="ecran">' + entete("Accueil", "accueil")
-    + '<h2 class="titre-question" tabindex="-1" data-focus>Humeur fine</h2>'
-    + '<p class="aide">Dose chaque envie de 0 à 3 plutôt que d\'en choisir une seule. Le mélange devient ta recommandation.</p>'
-    + '<p class="eyebrow eyebrow--interne">Ce que tu cherches</p>';
-  for(const cle of Object.keys(humeur_fine.registres)){
-    html += curseur_poids("hf-registre", NOMS_REGISTRE[cle], humeur_fine.registres[cle]);
-  }
-  html += '<p class="eyebrow eyebrow--interne">Le décor</p>';
-  for(const cle of Object.keys(humeur_fine.climats)){
-    html += curseur_poids("hf-climat", NOMS_CLIMAT[cle], humeur_fine.climats[cle]);
-  }
-  html += '<p class="eyebrow eyebrow--interne">Format</p>'
-    + pastilles_axe("hf-formats", [["film","Films"],["serie","Séries"],["doc","Documentaires"]], humeur_fine.formats);
 
-  html += '<p class="eyebrow eyebrow--interne">Audace</p><div class="puces">';
-  for(const [valeur, libelle] of [["sure","En terrain sûr"],["cote","Un pas de côté"],["angle","Surprends-moi"]]){
-    html += '<button class="puce' + (humeur_fine.audace === valeur ? " puce--active" : "") + '" data-agir="hf-audace" data-valeur="' + valeur + '">'
-      + libelle + '</button>';
-  }
-  html += '</div><p class="eyebrow eyebrow--interne">Avec qui</p><div class="puces">';
-  for(const [valeur, libelle] of [["seul","Seule"],["deux","À deux"],["famille","En famille"]]){
-    html += '<button class="puce' + (humeur_fine.compagnie === valeur ? " puce--active" : "") + '" data-agir="hf-compagnie" data-valeur="' + valeur + '">'
-      + libelle + '</button>';
-  }
-  html += '</div><button class="bouton bouton--primaire" data-agir="hf-composer">Composer</button>';
-  return html + bandeau() + '</section>';
-}
-
-function ecran_marathon(profil){
-  const oeuvres = resoudre_cles(marathon, catalogue_complet());
-  const total = duree_totale(oeuvres);
-  let html = '<section class="ecran">' + entete("Accueil", "accueil")
-    + '<h2 class="titre-question" tabindex="-1" data-focus>La soirée</h2>'
-    + '<p class="aide">Empile les titres dans l\'ordre, vois le temps total, et garde ça sous la main.</p>';
-
-  if(oeuvres.length > 0){
-    const morceaux = [];
-    if(total.minutes > 0) morceaux.push(formater_duree(total.minutes));
-    if(total.series > 0) morceaux.push(total.series + " série" + (total.series > 1 ? "s" : ""));
-    html += '<p class="total-duree">' + oeuvres.length + ' titre' + (oeuvres.length > 1 ? "s" : "")
-      + (morceaux.length ? ' · ' + morceaux.join(" + ") : "") + '</p>';
-  }
-
-  html += '<label class="eyebrow eyebrow--interne" for="saisie-marathon">Ajouter un titre</label>'
-    + '<input class="champ" id="saisie-marathon" placeholder="Chercher dans le catalogue…" '
-    + 'value="' + echapper(marathon_recherche) + '" data-agir-saisie="marathon">';
-
-  if(marathon_recherche.trim()){
-    const trouves = chercher(catalogue_complet(), {texte: marathon_recherche}).slice(0, 8);
-    html += '<ul class="liste liste--suggest">';
-    for(const oeuvre of trouves){
-      const dedans = marathon.indexOf(cle_oeuvre(oeuvre)) !== -1;
-      html += '<li><span class="liste__titre">' + echapper(oeuvre.t) + '</span>'
-        + '<span class="liste__meta">' + LIBELLES_FORMAT[oeuvre.f] + '</span>'
-        + '<button class="lien lien--mini" data-agir="vers-marathon" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">'
-        + (dedans ? "déjà là" : "ajouter") + '</button></li>';
-    }
-    html += '</ul>';
-  }
-
-  if(oeuvres.length === 0){
-    html += '<p class="aide">La soirée est vide. Ajoute des titres ici, depuis une fiche, ou depuis l\'atelier.</p>';
-  } else {
-    html += '<ol class="file">';
-    oeuvres.forEach((oeuvre, rang) => {
-      const minutes = duree_minutes(oeuvre.d);
-      html += '<li class="file__ligne"><div class="file__corps">'
-        + '<button class="liste__titre" data-agir="fiche" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">' + echapper(oeuvre.t) + '</button>'
-        + '<span class="liste__meta">' + echapper(oeuvre.r) + (minutes ? ' · ' + formater_duree(minutes) : '') + '</span></div>'
-        + '<div class="file__boutons">'
-        + '<button class="rang" data-agir="marathon-monter" data-rang="' + rang + '" ' + (rang === 0 ? "disabled" : "") + ' aria-label="Monter">↑</button>'
-        + '<button class="rang" data-agir="marathon-descendre" data-rang="' + rang + '" ' + (rang === oeuvres.length - 1 ? "disabled" : "") + ' aria-label="Descendre">↓</button>'
-        + '<button class="rang rang--retirer" data-agir="marathon-retirer" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '" aria-label="Retirer">✕</button>'
-        + '</div></li>';
-    });
-    html += '</ol>';
-
-    // F18 — heure de début réglable, F13 — déroulé minuté de la soirée.
-    const HEURES = ["18:00","19:00","19:30","20:00","20:30","21:00","21:30"];
-    html += '<p class="eyebrow eyebrow--interne">On commence à</p><div class="bascule">'
-      + HEURES.map(heure => '<button class="lien' + (heure_soiree === heure ? " lien--actif" : "")
-          + '" data-agir="heure-soiree" data-heure="' + heure + '">' + heure + '</button>').join('<span class="lien-sep">·</span>')
-      + '</div>';
-    const minutes_seules = oeuvres.filter(oeuvre => duree_minutes(oeuvre.d) !== null);
-    if(minutes_seules.length > 0){
-      const creneaux = horaires_soiree(minutes_seules, heure_soiree, 15);
-      html += '<ul class="liste liste--compacte">' + creneaux.map(creneau =>
-          '<li class="liste__item"><span class="liste__titre">' + echapper(creneau.oeuvre.t) + '</span>'
-          + '<span class="liste__meta">' + creneau.debut + ' → ' + creneau.fin
-          + '</span></li>').join("")
-        + '</ul><p class="aide">Quinze minutes d\'entracte entre chaque titre. Fin prévue à '
-        + creneaux[creneaux.length - 1].fin + '.</p>';
-    }
-
-    html += '<button class="bouton bouton--second" data-agir="marathon-copier">Copier la soirée</button>'
-      + '<button class="bouton bouton--second" data-agir="imprimer">Imprimer</button>'
-      + '<button class="bouton bouton--second" data-agir="marathon-vider">Vider</button>';
-  }
-  return html + bandeau() + '</section>';
-}
 
 function ecran_realisateur(profil){
   if(!realisateur_courant){
@@ -6932,47 +6747,75 @@ function ecran_famille_prix(profil){
   return html + '</ul>' + bandeau() + '</section>';
 }
 
+/* ── Les grands classiques ────────────────────────────────────── */
+
+/** Format demandé sur l'écran des classiques, ou null pour tous. */
+let classiques_format = null;
+let graine_classiques = 1;
+
+function ecran_classiques(profil){
+  const catalogue = catalogue_complet();
+  const choix = grands_classiques({
+    profil, catalogue, graine: graine_classiques, combien: 8, format: classiques_format
+  });
+
+  let html = '<section class="ecran">' + entete("Ce soir", "ce_soir")
+    + '<h2 class="titre-question" tabindex="-1" data-focus>Les grands classiques</h2>'
+    + '<p class="aide">Ce qu\'il faut avoir vu, et ce qui le justifie. Les titres déjà passés par ton journal n\'apparaissent plus.</p>'
+    + '<div class="puces">';
+
+  for(const [valeur, libelle] of [[null,"Tout"],["film","Films"],["serie","Séries"],["doc","Documentaires"]]){
+    const actif = classiques_format === valeur;
+    html += '<button class="puce' + (actif ? " puce--active" : "") + '" data-agir="classiques-format" data-format="'
+      + (valeur === null ? "" : valeur) + '">' + libelle + '</button>';
+  }
+  html += '</div>';
+
+  if(choix.length === 0){
+    html += '<p class="vide">Plus rien à te faire découvrir dans cette catégorie. C\'est déjà beaucoup.</p>';
+    return html + bandeau() + '</section>';
+  }
+
+  html += '<ul class="liste">';
+  for(const oeuvre of choix){
+    html += '<li><button class="liste__titre" data-agir="fiche" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">'
+      + echapper(oeuvre.t) + '</button>'
+      + '<span class="liste__meta">' + echapper(oeuvre.r) + ' · ' + oeuvre.a
+      + (oeuvre.raisons.length ? ' — ' + echapper(oeuvre.raisons[0]) : '') + '</span></li>';
+  }
+  html += '</ul><button class="bouton bouton--second" data-agir="classiques-relancer">Une autre sélection</button>';
+  return html + bandeau() + '</section>';
+}
+
 /* ═══════════════════════════════════════════════════════════════
    13. BRANCHEMENT DES NOUVEAUX ÉCRANS
    ═══════════════════════════════════════════════════════════════ */
 
-let marathon_recherche = "";
 
 Object.assign(ECRANS, {
   palmares:     () => ecran_palmares(),
   famille_prix: (p) => ecran_famille_prix(p),
+  classiques:   (p) => ecran_classiques(p),
   atelier:     (p) => ecran_atelier(p),
-  humeur_fine: (p) => ecran_humeur_fine(p),
-  marathon:    (p) => ecran_marathon(p),
   realisateur: (p) => ecran_realisateur(p)
 });
 
-/**
- * Sélectionne quelques œuvres variées (réalisateurs distincts) dans une liste.
- * @param {object[]} oeuvres
- * @param {number} combien
- * @returns {object[]}
- */
-function varier_par_auteur(oeuvres, combien){
-  const retenus = [], auteurs = [];
-  for(const oeuvre of oeuvres){
-    if(retenus.length >= combien) break;
-    if(auteurs.indexOf(oeuvre.r) !== -1) continue;
-    retenus.push(oeuvre); auteurs.push(oeuvre.r);
-  }
-  return retenus;
-}
 
 Object.assign(ACTIONS, {
 
+  "classiques-format": (el) => {
+    const demande = el.dataset.format || null;
+    classiques_format = classiques_format === demande ? null : demande;
+    rendre({focus:false});
+  },
+
+  "classiques-relancer": () => {
+    graine_classiques = Date.now() % 100000;
+    rendre({focus:false});
+  },
+
   "atelier-axe": (el) => {
     const {axe, valeur} = el.dataset;
-    if(axe === "hf-formats"){
-      humeur_fine.formats = humeur_fine.formats.indexOf(valeur) !== -1
-        ? humeur_fine.formats.filter(v => v !== valeur) : humeur_fine.formats.concat([valeur]);
-      rendre({focus:false});
-      return;
-    }
     const liste = atelier[axe];
     if(axe === "decennies"){
       const n = parseInt(valeur, 10);
@@ -7048,86 +6891,16 @@ Object.assign(ACTIONS, {
     aller("fiche");
   },
 
-  "atelier-soiree": () => {
-    const criteres = criteres_atelier();
-    const lot = filtrer_avance(catalogue_complet(), criteres).sort(COMPARATEURS[atelier.tri] || COMPARATEURS.titre);
-    const choix = varier_par_auteur(lot, 5);
-    if(choix.length === 0){ signaler("Sélection vide."); return; }
-    marathon = choix.map(cle_oeuvre);
-    signaler(choix.length + " titre" + (choix.length > 1 ? "s ajoutés" : " ajouté") + " à la soirée.");
-    aller("marathon");
-  },
 
-  "hf-registre": (el) => {
-    const cle = Object.keys(NOMS_REGISTRE).find(k => NOMS_REGISTRE[k] === el.dataset.cle);
-    if(cle) humeur_fine.registres[cle] = parseInt(el.dataset.niveau, 10);
-    rendre({focus:false});
-  },
 
-  "hf-climat": (el) => {
-    const cle = Object.keys(NOMS_CLIMAT).find(k => NOMS_CLIMAT[k] === el.dataset.cle);
-    if(cle) humeur_fine.climats[cle] = parseInt(el.dataset.niveau, 10);
-    rendre({focus:false});
-  },
 
-  "hf-audace": (el) => { humeur_fine.audace = el.dataset.valeur; rendre({focus:false}); },
-  "hf-compagnie": (el) => { humeur_fine.compagnie = el.dataset.valeur; rendre({focus:false}); },
 
-  "hf-composer": () => {
-    const profil = profil_actif();
-    graine = Date.now() % 100000;
-    ecartes = [];
-    propositions = composer_pondere({
-      profil, poidsRegistres: humeur_fine.registres, poidsClimats: humeur_fine.climats,
-      audace: humeur_fine.audace, compagnie: humeur_fine.compagnie, formats: humeur_fine.formats,
-      catalogue: catalogue_complet(), graine
-    });
-    if(propositions.length === 0){ signaler("Rien ne ressort de ce mélange — allège une exclusion ?"); return; }
-    // Humeur représentative pour que la justification du programme reste lisible.
-    const domR = Object.keys(humeur_fine.registres).reduce((a, b) => humeur_fine.registres[b] > humeur_fine.registres[a] ? b : a);
-    const domC = Object.keys(humeur_fine.climats).reduce((a, b) => humeur_fine.climats[b] > humeur_fine.climats[a] ? b : a);
-    humeur = {
-      registre: humeur_fine.registres[domR] > 0 ? domR : "eblouissement",
-      climat: humeur_fine.climats[domC] > 0 ? domC : "tout",
-      audace: humeur_fine.audace, compagnie: humeur_fine.compagnie,
-      format: humeur_fine.formats.length === 1 ? humeur_fine.formats[0] : "tout", duree: "tout"
-    };
-    profil_session = null;
-    aller("programme");
-  },
 
-  "vers-marathon": (el) => {
-    const cle = el.dataset.cle;
-    if(marathon.indexOf(cle) !== -1){ signaler("Ce titre est déjà dans la soirée."); return; }
-    marathon = marathon.concat([cle]);
-    const oeuvre = oeuvre_par_cle(cle);
-    signaler("« " + (oeuvre ? oeuvre.t : "Titre") + " » ajouté à la soirée.");
-  },
 
-  "marathon-retirer": (el) => {
-    marathon = marathon.filter(cle => cle !== el.dataset.cle);
-    rendre({focus:false});
-  },
 
-  "marathon-monter": (el) => {
-    marathon = deplacer(marathon, parseInt(el.dataset.rang, 10), "haut");
-    rendre({focus:false});
-  },
 
-  "marathon-descendre": (el) => {
-    marathon = deplacer(marathon, parseInt(el.dataset.rang, 10), "bas");
-    rendre({focus:false});
-  },
 
-  "marathon-vider": () => { marathon = []; marathon_recherche = ""; signaler("Soirée vidée."); },
 
-  "marathon-copier": () => {
-    const oeuvres = resoudre_cles(marathon, catalogue_complet());
-    const total = duree_totale(oeuvres);
-    const lignes = oeuvres.map((o, i) => (i + 1) + ". " + o.t + " (" + o.r + ", " + o.a + ")");
-    const pied = total.minutes > 0 ? "\n\nDurée totale : " + formater_duree(total.minutes) : "";
-    copier_texte("Ma soirée cinéma\n\n" + lignes.join("\n") + pied, "Soirée copiée.");
-  },
 
   realisateur: (el) => {
     realisateur_courant = el.dataset.nom;
@@ -7155,17 +6928,14 @@ Object.assign(ACTIONS, {
   }
 });
 
-// Saisies en direct propres aux nouveaux écrans (atelier, marathon).
+// Saisie en direct du champ de recherche de l'atelier.
 app.addEventListener("input", evenement => {
   const champ = evenement.target;
-  const role = champ.dataset.agirSaisie;
-  if(role !== "atelier" && role !== "marathon") return;
+  if(champ.dataset.agirSaisie !== "atelier") return;
   const position = champ.selectionStart;
-  if(role === "atelier") atelier.texte = champ.value;
-  if(role === "marathon") marathon_recherche = champ.value;
+  atelier.texte = champ.value;
   rendre({focus:false});
-  const id = role === "atelier" ? "saisie-atelier" : "saisie-marathon";
-  const noeud = document.getElementById(id);
+  const noeud = document.getElementById("saisie-atelier");
   if(noeud){ noeud.focus(); noeud.setSelectionRange(position, position); }
 });
 
@@ -8074,12 +7844,6 @@ let sablier_minutes = 100;
 let sablier_mode = "un";        // "un" (un seul titre) ou "soiree" (plusieurs)
 let graine_sablier = 1;
 let fil_rouge_ouvert = null;
-let degres_depart = null;
-let degres_arrivee = null;
-let degres_choix = "depart";    // quelle borne la recherche va renseigner
-let brouillon_degres = "";
-let festival_jours = 3;
-let graine_festival = 1;
 let graine_kaleidoscope = 1;
 let graine_double = 1;
 let accord_double = null;
@@ -8215,76 +7979,9 @@ function ecran_fils_rouges(){
 
 /* ── F4. Les six degrés ───────────────────────────────────────── */
 
-function ecran_degres(){
-  let html = '<section class="ecran">' + entete("Six degrés", "accueil")
-    + '<h2 class="titre-question" tabindex="-1" data-focus>Relier deux titres</h2>'
-    + '<p class="sous-titre">De voisin en voisin, quel est le plus court chemin ?</p>'
-    + '<div class="duo-cases">'
-    + '<button class="case' + (degres_choix === "depart" ? " case--active" : "") + '" data-agir="degres-cible" data-cible="depart">'
-    + '<span class="case__role">Départ</span><strong>'
-    + (degres_depart ? echapper(degres_depart.t) : "à choisir") + '</strong></button>'
-    + '<button class="case' + (degres_choix === "arrivee" ? " case--active" : "") + '" data-agir="degres-cible" data-cible="arrivee">'
-    + '<span class="case__role">Arrivée</span><strong>'
-    + (degres_arrivee ? echapper(degres_arrivee.t) : "à choisir") + '</strong></button>'
-    + '</div>'
-    + '<input class="champ" id="saisie-degres" type="search" autocomplete="off"'
-    + ' placeholder="Chercher un titre pour le ' + (degres_choix === "depart" ? "départ" : "point d\'arrivée") + '"'
-    + ' value="' + echapper(brouillon_degres) + '">';
-
-  if(brouillon_degres.trim().length >= 2){
-    const trouves = chercher(CATALOGUE, {texte: brouillon_degres}).slice(0, 8);
-    html += '<ul class="liste liste--compacte">' + trouves.map(o =>
-      '<li class="liste__item"><button class="liste__titre" data-agir="degres-poser" data-cle="'
-      + echapper(cle_oeuvre(o)) + '">' + echapper(o.t) + '</button>'
-      + '<span class="liste__meta">' + o.a + '</span></li>').join("") + '</ul>';
-  }
-
-  if(degres_depart && degres_arrivee){
-    html += filet();
-    const chemin = chemin_entre(degres_depart, degres_arrivee, CATALOGUE, 6);
-    if(!chemin){
-      html += '<p class="vide">Aucun chemin en six pas ou moins. Ces deux-là vivent dans des mondes séparés.</p>';
-    } else {
-      html += '<p class="sous-titre">' + (chemin.length - 1) + ' pas.</p><ol class="chemin">';
-      chemin.forEach((oeuvre, rang) => {
-        html += '<li class="chemin__pas">'
-          + '<span class="chemin__rang">' + rang + '</span>'
-          + '<button class="liste__titre" data-agir="fiche" data-cle="' + echapper(cle_oeuvre(oeuvre)) + '">'
-          + echapper(oeuvre.t) + '</button>'
-          + '<span class="liste__meta">' + echapper(oeuvre.r) + ' · ' + oeuvre.a + '</span></li>';
-      });
-      html += '</ol>';
-    }
-    html += '<button class="bouton bouton--second" data-agir="degres-vider">Recommencer</button>';
-  }
-  return html + bandeau() + '</section>';
-}
 
 /* ── F5. Le festival ──────────────────────────────────────────── */
 
-function ecran_festival(profil){
-  const programme = programmer_festival(CATALOGUE, profil, festival_jours, graine_festival);
-  let html = '<section class="ecran">' + entete("Le festival", "accueil")
-    + '<h2 class="titre-question" tabindex="-1" data-focus>Ta programmation</h2>'
-    + '<p class="sous-titre">Une ligne directrice par jour, deux titres par ligne.</p>'
-    + '<div class="options options--grille">';
-  for(let jours = 2; jours <= 7; jours++){
-    html += '<button class="option' + (festival_jours === jours ? " option--choisie" : "") + '"'
-      + ' data-agir="festival-jours" data-jours="' + jours + '">'
-      + '<span class="option__marque"></span><span class="option__texte"><strong>'
-      + jours + ' jours</strong></span></button>';
-  }
-  html += '</div>' + filet();
-
-  programme.forEach((jour, rang) => {
-    html += '<h3 class="section-titre">Jour ' + (rang + 1) + ' — ' + echapper(jour.ligne.nom) + '</h3>';
-    html += jour.oeuvres.length === 0
-      ? '<p class="vide">Rien à programmer ce jour-là.</p>'
-      : '<ul class="liste">' + jour.oeuvres.map(o => ligne_titre(o, String(o.a))).join("") + '</ul>';
-  });
-  return html + '<button class="bouton bouton--second" data-agir="festival-relancer">Reprogrammer</button>'
-    + bandeau() + '</section>';
-}
 
 /* ── F6. Les éphémérides ──────────────────────────────────────── */
 
@@ -8569,8 +8266,6 @@ function ecran_mode_emploi(){
 Object.assign(ECRANS, {
   sablier: ecran_sablier,
   fils_rouges: ecran_fils_rouges,
-  degres: ecran_degres,
-  festival: ecran_festival,
   ephemerides: ecran_ephemerides,
   kaleidoscope: ecran_kaleidoscope,
   double: ecran_double,
@@ -8593,24 +8288,8 @@ Object.assign(ACTIONS, {
   "fil-rouge-fermer": () => { fil_rouge_ouvert = null; rendre(); },
 
   /* — Six degrés — */
-  "degres-cible": (el) => { degres_choix = el.dataset.cible; rendre({focus:false}); },
-  "degres-poser": (el) => {
-    const oeuvre = oeuvre_par_cle(el.dataset.cle);
-    if(!oeuvre) return;
-    if(degres_choix === "depart"){ degres_depart = oeuvre; degres_choix = "arrivee"; }
-    else { degres_arrivee = oeuvre; degres_choix = "depart"; }
-    brouillon_degres = "";
-    rendre({focus:false});
-  },
-  "degres-vider": () => {
-    degres_depart = null; degres_arrivee = null;
-    degres_choix = "depart"; brouillon_degres = "";
-    rendre();
-  },
 
   /* — Festival — */
-  "festival-jours": (el) => { festival_jours = parseInt(el.dataset.jours, 10); rendre(); },
-  "festival-relancer": () => { graine_festival = (graine_festival + 1) % 100000; rendre(); },
 
   /* — Kaléidoscope — */
   "kaleidoscope-relancer": () => { graine_kaleidoscope = (graine_kaleidoscope + 1) % 100000; rendre(); },
@@ -8713,11 +8392,6 @@ app.addEventListener("input", evenement => {
   const champ = evenement.target;
 
   // Champs dont l'écran affiche des résultats en direct : on redessine.
-  if(champ.id === "saisie-degres"){
-    brouillon_degres = champ.value;
-    rendre_en_gardant_le_curseur("saisie-degres");
-    return;
-  }
   if(champ.id === "saisie-ambiance"){
     brouillon_ambiance = champ.value;
     rendre_en_gardant_le_curseur("saisie-ambiance");
