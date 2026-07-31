@@ -1,0 +1,70 @@
+name: Aperçu de la pull request
+
+# L'application tient dans un seul fichier HTML autonome : il n'y a rien à
+# construire. Un service qui sert le fichier brut avec le bon type MIME suffit
+# donc à l'exécuter. GitHub sert le brut en text/plain, ce qui affiche le code
+# source au lieu de la page — d'où le passage par un proxy.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "le-programme-du-soir.html"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  publier-le-lien:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mesurer le catalogue
+        id: mesures
+        run: |
+          fichier=le-programme-du-soir.html
+          titres=$(grep -c '^{t:"' "$fichier" || echo 0)
+          poids=$(du -h "$fichier" | cut -f1)
+          echo "titres=$titres" >> "$GITHUB_OUTPUT"
+          echo "poids=$poids" >> "$GITHUB_OUTPUT"
+
+      - name: Publier ou mettre à jour le commentaire
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branche = context.payload.pull_request.head.ref;
+            const depot = `${context.repo.owner}/${context.repo.repo}`;
+            const lien = `https://raw.githack.com/${depot}/${encodeURIComponent(branche)}/le-programme-du-soir.html`;
+
+            const corps = [
+              '<!-- apercu-pr -->',
+              '### Aperçu de cette version',
+              '',
+              `**[Ouvrir l'application telle qu'elle est dans cette branche](${lien})**`,
+              '',
+              `\`${{ steps.mesures.outputs.titres }}\` titres au catalogue · \`${{ steps.mesures.outputs.poids }}\` · branche \`${branche}\``,
+              '',
+              "Le service affiche d'abord un avertissement : c'est un proxy qui sert le fichier brut sans le relire. Un clic sur « Open the page » lance l'application.",
+              '',
+              "Le profil créé depuis cet aperçu est distinct de celui du site publié : les navigateurs cloisonnent le stockage par adresse.",
+            ].join('\n');
+
+            const {data: commentaires} = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const existant = commentaires.find(c => c.body.includes('<!-- apercu-pr -->'));
+
+            if (existant) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existant.id, body: corps
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body: corps
+              });
+            }
