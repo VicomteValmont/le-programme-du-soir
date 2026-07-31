@@ -5126,9 +5126,15 @@ const LIBELLES_FORMAT = {film:"Film", serie:"Série", doc:"Documentaire"};
 
 function filet(){ return '<div class="filet"><span></span><i></i><span></span></div>'; }
 
+/**
+ * En-tête d'écran. Le bouton revient à l'écran d'où l'on vient réellement,
+ * et non à une destination fixe : depuis que les écrans sont rangés en
+ * sections, la même fiche s'atteint par plusieurs chemins. `cible` ne sert
+ * plus que de repli quand l'historique est vide, au premier affichage.
+ */
 function entete(titre, cible){
   return '<header class="entete">'
-    + '<button class="lien lien--retour" data-agir="aller" data-vue="' + cible + '">← Retour</button>'
+    + '<button class="lien lien--retour" data-agir="retour" data-vue="' + echapper(cible) + '">← Retour</button>'
     + '<span class="eyebrow">' + echapper(titre) + '</span></header>';
 }
 
@@ -5310,25 +5316,14 @@ function ecran_accueil(profil){
     + '<h1 class="titre-hero" tabindex="-1" data-focus>Le programme<br><em>du soir</em></h1>'
     + filet()
     + '<p class="date">' + date_du_jour() + '</p>'
-    + '<button class="bouton bouton--primaire" data-agir="ouvrir-session">Composer la séance</button>'
-    + '<button class="bouton bouton--second" data-agir="surprise">Surprends-moi, sans question</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="profil_cinema">Mon cinéma, mes films vus</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="humeur_fine">Régler mon humeur au détail</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="atelier">Ouvrir l\'atelier</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="cycles">Lancer un cycle</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="palmares">Le palmarès</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="marathon">Composer une soirée</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="duo">Soirée à deux</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="fil">Tirer le fil</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="defis">Le défi du soir</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="comparateur">Comparer deux titres</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="collections">Mes collections</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="bibliotheque">La bibliothèque</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="acteurs">Les visages</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="sablier">J\'ai tant de temps devant moi</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="ambiance">Décrire une ambiance</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="double">Double programme</button>'
-    + '<button class="bouton bouton--second" data-agir="aller" data-vue="aveugle">À l\'aveugle</button>';
+    // Un seul geste évident, puis les cinq intentions. Le reste est descendu
+    // d'un cran : rien n'a disparu, tout est derrière l'une de ces portes.
+    + '<button class="bouton bouton--primaire" data-agir="ouvrir-session">Composer la séance</button>';
+
+  for(const section of SECTIONS){
+    html += '<button class="bouton bouton--second" data-agir="aller" data-vue="' + section.id + '">'
+      + echapper(section.nom) + '</button>';
+  }
 
   // Une suggestion accordée à la saison et à l'heure, si le réglage est actif.
   if(moment_actif){
@@ -5355,24 +5350,10 @@ function ecran_accueil(profil){
       + encours.map(oeuvre => ligne_liste(oeuvre, "reprendre")).join("") + '</ul>';
   }
 
+  // Les deux gestes les plus fréquents restent à portée, sans encombrer.
   html += '<nav class="liens">'
-    + '<button class="lien" data-agir="aller" data-vue="fils_rouges">Fils rouges</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="kaleidoscope">Kaléidoscope</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="degres">Six degrés</button></nav>'
-    + '<nav class="liens">'
-    + '<button class="lien" data-agir="aller" data-vue="festival">Festival</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="rituels">Rituels</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="almanach">Almanach</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="ephemerides">Éphémérides</button></nav>'
-    + '<nav class="liens">'
-    + '<button class="lien" data-agir="aller" data-vue="explorer">Explorer</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="avoir">À voir (' + profil.aVoir.length + ')</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="journal">Historique</button></nav>'
-    + '<nav class="liens">'
-    + '<button class="lien" data-agir="aller" data-vue="stats">Statistiques</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="mode_emploi">Comment ça marche</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="reglages">Réglages</button><span class="lien-sep">·</span>'
-    + '<button class="lien" data-agir="aller" data-vue="profils">Changer</button></nav>'
+    + '<button class="lien" data-agir="aller" data-vue="explorer">Chercher un titre</button><span class="lien-sep">·</span>'
+    + '<button class="lien" data-agir="aller" data-vue="avoir">À voir (' + profil.aVoir.length + ')</button></nav>'
     + themes_html(profil.theme)
     + bandeau() + '</section>';
   return html;
@@ -5935,6 +5916,94 @@ function ecran_duo(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   8 bis. LES CINQ INTENTIONS
+   L'accueil listait trente-quatre entrées de même poids, dont dix-neuf
+   répondaient à la même question. Elles deviennent ici cinq intentions,
+   chacune regroupant ses écrans. Rien n'est supprimé : tout descend
+   d'un cran, et les libellés disent enfin ce que chaque écran fait.
+   ═══════════════════════════════════════════════════════════════ */
+
+const SECTIONS = [
+  {id:"ce_soir", nom:"Ce soir", resume:"Trouver quoi regarder maintenant", entrees:[
+    {agir:"ouvrir-session", nom:"Composer la séance",        detail:"Quelques questions, trois propositions"},
+    {agir:"surprise",       nom:"Surprends-moi",             detail:"Un titre tout de suite, sans rien demander"},
+    {vue:"humeur_fine",     nom:"Régler l'envie au détail",  detail:"Des curseurs plutôt qu'un questionnaire"},
+    {vue:"sablier",         nom:"J'ai tant de temps",        detail:"Ce qui tient dans le temps disponible"},
+    {vue:"ambiance",        nom:"Décrire une ambiance",      detail:"Quelques mots en texte libre"},
+    {vue:"marathon",        nom:"Composer une soirée",       detail:"Plusieurs titres qui s'enchaînent"},
+    {vue:"duo",             nom:"Soirée à deux",             detail:"Croiser deux profils de goût"},
+    {vue:"defis",           nom:"Le défi du soir",           detail:"Une contrainte imposée, à relever"},
+    {vue:"double",          nom:"Deux films d'affilée",      detail:"Une paire qui se répond"},
+    {vue:"aveugle",         nom:"Sans le titre",             detail:"Décrit à l'aveugle, révélé après"}
+  ]},
+  {id:"chercher", nom:"Chercher", resume:"Fouiller le catalogue", entrees:[
+    {vue:"explorer",     nom:"Recherche simple",        detail:"Par titre, réalisateur ou étiquette"},
+    {vue:"atelier",      nom:"Recherche détaillée",     detail:"Tous les critères, combinables"},
+    {vue:"palmares",     nom:"Le palmarès",             detail:"Par récompense obtenue"},
+    {vue:"cycles",       nom:"Cycles thématiques",      detail:"Une sélection suivie, du plus accessible au plus exigeant"},
+    {vue:"fils_rouges",  nom:"Obsessions du catalogue", detail:"Les motifs qui traversent les titres"},
+    {vue:"acteurs",      nom:"Acteurs",                 detail:"Chercher par interprète"},
+    {vue:"bibliotheque", nom:"Adaptations de romans",   detail:"Ce qui vient d'un livre"}
+  ]},
+  {id:"ma_liste", nom:"Ma liste", resume:"Ce que j'ai vu, ce que je veux voir", entrees:[
+    {vue:"avoir",       nom:"À voir",            detail:"Ce que j'ai mis de côté"},
+    {vue:"journal",     nom:"Mon historique",    detail:"Tout ce qui est passé"},
+    {vue:"collections", nom:"Mes collections",   detail:"Mes listes à moi"},
+    {vue:"pointage",    nom:"J'ai vu ces films", detail:"Cocher en masse ce que je connais déjà"},
+    {vue:"carnet",      nom:"Mes notes",         detail:"Ce que j'ai écrit sur chaque titre"}
+  ]},
+  {id:"mon_profil", nom:"Mon profil", resume:"Qui je suis pour l'application", entrees:[
+    {vue:"profil_cinema", nom:"Mon cinéma",          detail:"Ce que mes films disent de mes goûts"},
+    {vue:"stats",         nom:"Statistiques",        detail:"Combien, quoi, de quelle époque"},
+    {vue:"reglages",      nom:"Réglages",            detail:"Goûts, exclusions, thème"},
+    {vue:"donnees",       nom:"Sauvegarde",          detail:"Exporter, restaurer, vérifier le catalogue"},
+    {vue:"mode_emploi",   nom:"Comment ça marche",   detail:"Le fonctionnement en quelques points"},
+    {vue:"profils",       nom:"Changer de profil",   detail:"Passer à quelqu'un d'autre"}
+  ]},
+  {id:"curiosites", nom:"Curiosités", resume:"Pour flâner plutôt que pour choisir", entrees:[
+    {vue:"fil",          nom:"De fil en aiguille",   detail:"Avancer de voisin en voisin"},
+    {vue:"degres",       nom:"Relier deux films",    detail:"Trouver le chemin de l'un à l'autre"},
+    {vue:"kaleidoscope", nom:"Au hasard, mais varié",detail:"Douze titres sans rapport entre eux"},
+    {vue:"comparateur",  nom:"Comparer deux titres", detail:"Ce qu'ils ont en commun"},
+    {vue:"festival",     nom:"Programmer un festival", detail:"Plusieurs jours de projection"},
+    {vue:"almanach",     nom:"Une année de cinéma",  detail:"Un titre par semaine, sur l'année"},
+    {vue:"ephemerides",  nom:"Un jour comme aujourd'hui", detail:"Ce que la date évoque"},
+    {vue:"rituels",      nom:"Mes rituels",          detail:"Un rendez-vous hebdomadaire"}
+  ]}
+];
+
+/** Retrouve la section d'un identifiant, ou null. */
+function section_par_id(id){
+  return SECTIONS.find(section => section.id === id) || null;
+}
+
+/**
+ * Rend la page d'une intention : ses entrées, avec ce que chacune fait.
+ * @param {object} section
+ * @param {object} profil
+ * @returns {string}
+ */
+function ecran_section(section, profil){
+  let html = '<section class="ecran">' + entete("Accueil", "accueil")
+    + '<h2 class="titre-question" tabindex="-1" data-focus>' + echapper(section.nom) + '</h2>'
+    + '<p class="aide">' + echapper(section.resume) + '</p>'
+    + '<ul class="liste">';
+
+  for(const entree of section.entrees){
+    // Le compte de la liste à voir change ; les autres détails sont fixes.
+    let detail = entree.detail;
+    if(entree.vue === "avoir" && profil) detail = profil.aVoir.length + " titre" + (profil.aVoir.length > 1 ? "s" : "") + " mis de côté";
+
+    const declencheur = entree.agir
+      ? 'data-agir="' + echapper(entree.agir) + '"'
+      : 'data-agir="aller" data-vue="' + echapper(entree.vue) + '"';
+    html += '<li><button class="liste__titre" ' + declencheur + '>' + echapper(entree.nom) + '</button>'
+      + '<span class="liste__meta">' + echapper(detail) + '</span></li>';
+  }
+  return html + '</ul>' + bandeau() + '</section>';
+}
+
+/* ═══════════════════════════════════════════════════════════════
    9. ROUTAGE
    ═══════════════════════════════════════════════════════════════ */
 
@@ -5943,6 +6012,11 @@ const ECRANS = {
   creation:  () => ecran_creation(),
   donnees:   () => ecran_donnees(),
   audit:     () => ecran_audit(),
+  ce_soir:    (p) => ecran_section(section_par_id("ce_soir"), p),
+  chercher:   (p) => ecran_section(section_par_id("chercher"), p),
+  ma_liste:   (p) => ecran_section(section_par_id("ma_liste"), p),
+  mon_profil: (p) => ecran_section(section_par_id("mon_profil"), p),
+  curiosites: (p) => ecran_section(section_par_id("curiosites"), p),
   accueil:   (p) => ecran_accueil(p),
   session:   () => ecran_session(),
   programme: (p) => ecran_programme(profil_session || p),
@@ -5994,9 +6068,30 @@ function rendre(options = {}){
   if(cible) cible.focus({preventScroll:true});
 }
 
+/** Écrans traversés, pour que « Retour » revienne d'où l'on vient. */
+let historique = [];
+/** Au-delà, on oublie les plus anciens : personne ne remonte trente écrans. */
+const PROFONDEUR_HISTORIQUE = 30;
+
 function aller(destination){
   if(destination === "fiche") ecran_retour = vue === "fiche" ? ecran_retour : vue;
+  if(destination !== vue){
+    historique.push(vue);
+    if(historique.length > PROFONDEUR_HISTORIQUE) historique.shift();
+  }
   vue = destination;
+  message = "";
+  rendre();
+}
+
+/**
+ * Revient à l'écran précédent. Le repli n'est utilisé que si l'historique
+ * est vide — au premier affichage, ou après un retour à l'accueil.
+ * @param {string} repli - destination par défaut
+ */
+function revenir(repli){
+  vue = historique.pop() || repli || "accueil";
+  if(vue === "accueil") historique = [];
   message = "";
   rendre();
 }
@@ -6018,7 +6113,9 @@ const ACTIONS = {
 
   aller: (el) => aller(el.dataset.vue),
 
-  ouvrir: (el) => { etat.actif = el.dataset.id; sauver(); aller("accueil"); },
+  retour: (el) => revenir(el.dataset.vue),
+
+  ouvrir: (el) => { etat.actif = el.dataset.id; sauver(); historique = []; aller("accueil"); },
 
   "supprimer-profil": (el) => {
     if(etat.profils.length <= 1) return;
